@@ -1,0 +1,800 @@
+---
+title: "et01b28: bulk RNA seq analysis of A549 clones"
+output:
+  html_document:
+    df_print: paged
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+Load libraires
+
+```{r message=FALSE, warning=FALSE}
+library(org.Hs.eg.db)
+library(edgeR)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(gtools)
+library(ComplexHeatmap)
+library(circlize)
+theme_set(theme_bw())
+```
+
+Read in phenotype data
+```{r}
+# read in phenotype data
+my_data_reordered <- read.csv("/Users/ethayer/Google Drive/Grad School/Brooke Lab/Data/bulkRNAseq_clones/bulkRNAseq_scripts/ET01B29_PERCENTINF_inflorder_2.csv")
+```
+
+Organizing the data, grouping/factors, summarized stats on expression
+```{r}
+# organizing my data into triplicates based off clone name
+my_summarized_data_exp <- my_data_reordered %>% 
+                        group_by(Population)
+# setting population as a factor to force R to treat them the same and
+# in a specific order (levels)
+my_summarized_data_exp$Population <- as.factor(my_summarized_data_exp$Population)
+my_summarized_data_exp$Population <- factor(my_summarized_data_exp$Population, 
+                                        levels=c("ET10", "ET3", "ET1", "ET5", 
+                                                 "ET11", "WT", "ET6", "ET4",
+                                                  "ET7", "ET8" , "ET2","ET9" ))
+
+
+#getting a table of statistics for my IFNL1 assay
+sumExp <- summarise(group_by(my_summarized_data_exp, Population),
+          meanExp = mean(GeneExp),
+          sdExp = sd(GeneExp), 
+          nExp = sum(!is.na(GeneExp)),
+          seExp = sdExp/sqrt(nExp),
+          varExp = var(GeneExp))
+sumExp
+```
+
+Making mean expression vector, organizing data with grouping, putting
+names of samples to values in vectors
+```{r}
+# getting the mean IFNL1 expression 16hrs post poly I:C treatment of the clones n=3 
+mean_exp_vector <- sumExp$meanExp
+mean_exp_vector
+
+# names for the vector from the population
+names(mean_exp_vector) <- sumExp$Population
+mean_exp_vector
+
+# making the vector go in order of increasing IFNL1 expression
+mean_exp_vector <- sort(mean_exp_vector, decreasing = FALSE)
+
+# expression levels (increasing) for setting factor as population names
+exp_levels <- names(mean_exp_vector)
+
+# setting the population as factor with levels set from the expression rank
+my_data_reordered$Population <- factor(my_data_reordered$Population, levels = exp_levels)
+
+my_summarized_data_exp$Population <- factor(my_summarized_data_exp$Population, 
+                                            levels = exp_levels)
+
+my_summarized_data_exp
+
+```
+
+Making a vector of mean expression values then log2 transforming them to
+use in the linear regression model
+```{r}
+# vector of mean exp values in order of clones and replicates
+exp_nofc <- c(270.1402, 270.1402, 270.1402, 435.6941, 435.6941, 435.6941, 1073.2791, 1073.2791, 1073.2791, 1112.1218, 1112.1218, 1112.1218, 1801.7220, 1801.7220, 1801.7220, 4238.4013, 4238.4013, 4238.4013, 4405.9252, 4405.9252, 4405.9252, 7096.7989, 7096.7989, 7096.7989, 63517.2411, 63517.2411, 63517.2411, 159497.1826, 159497.1826, 159497.1826, 199639.9123, 199639.9123, 199639.9123, 239883.1258, 239883.1258, 239883.1258)
+
+samples <- 1:36
+# vector to collect log2 transformed expression values for model
+transformed <- c()
+for (i in samples) {
+  a <- log2(exp_nofc[i])
+  transformed <- append(transformed, a)
+  print(a)
+}
+log(270.1402, base = 2)
+
+transformed
+
+my_summarized_data_exp$log2meanexp <- transformed
+
+my_summarized_data_exp
+```
+
+
+#--------------------- Moving on to bulk data ----------------------
+
+```{r fig.height=8, fig.width=5}
+# read in count matrix generated
+df <- readr::read_tsv("/Users/ethayer/Google Drive/Grad School/Brooke Lab/Data/bulkRNAseq_clones/bulkRNAseq_scripts/counts.txt")
+
+# take out all the genes that are ambiguously matched/unmatched
+df_counts <- df %>% filter(!grepl("^N_", GeneName))
+```
+
+Mapping the gene IDs, changing to gene symbol instead of ensembl
+```{r}
+df_counts %>% head()
+# translating ensembl id to gene symbol (IFNL1)
+mapped_ids <- mapIds(org.Hs.eg.db, keys=df_counts$GeneName,
+                     column = "SYMBOL", keytype = "ENSEMBL")
+# if you dont find a name, instead of na, use old symbol (ensembl ENSG00000223972)
+mapped_ids <- ifelse(is.na(mapped_ids), yes = df_counts$GeneName, no = mapped_ids)
+# replace old gene names with mapped ones (or with the weird id)
+df_counts$GeneName <- mapped_ids
+df_counts
+
+```
+
+Reordering the counts matriix to follow the IFNL1 ordering
+```{r}
+no_gene_counts <- df_counts[-1]
+dim(no_gene_counts)
+colnames(no_gene_counts) <- df_counts %>%
+    dplyr::select(-1) %>%
+    colnames() %>%
+    gsub(pattern = "_.*", replacement = "", x = .)
+# vector of the column names in the order of least to most IFNL1 induced expression
+# to reorganize my raw data columns
+full_col_names <- c("GeneName", "ET10_1", "ET10_2", "ET10_3", "ET3_1", "ET3_2", "ET3_3", "ET1_1", "ET1_2", "ET1_3", "ET5_1", "ET5_2", "ET5_3", "ET11_1", "ET11_2", "ET11_3", "WT_1", "WT_2", "WT_3", "ET6_1", "ET6_2", "ET6_3", "ET4_1", "ET4_2", "ET4_3", "ET7_1", "ET7_2", "ET7_3", "ET8_1", "ET8_2", "ET8_3", "ET2_1", "ET2_2", "ET2_3", "ET9_1", "ET9_2", "ET9_3")
+df_counts_reordered_ifnl1 <- df_counts %>%
+    .[,full_col_names]
+```
+
+Preliminary DGEList with unpooled counts etc.
+```{r}
+my_new_grouping <- df_counts_reordered_ifnl1 %>% 
+    dplyr::select(-1) %>% 
+    colnames() %>% 
+    gsub(pattern = "_.*", replacement = "", x = .) %>% 
+    factor(., levels = names(mean_exp_vector))
+my_new_grouping
+
+y1 <- edgeR::DGEList(counts = df_counts_reordered_ifnl1 %>% 
+                        dplyr::select(-1), 
+                     genes = df_counts_reordered_ifnl1[[1]], 
+                     group = my_new_grouping)
+```
+
+Making a linear regression on the IFNL1 phenotype data and making a
+model.matrix using the regression coefficients
+```{r}
+# Generate the equation with the expression
+E2 <- poly(transformed, degree = 1)
+design_transformedexp <- model.matrix(~E2)
+```
+
+Unpooled Analysis: filtering, calc normalization factors, estimate
+dispersions
+```{r}
+# keep genes with at least 0.1 cpm (10/lowest library count which is 100M)
+# in each replicate
+keep1 <- rowSums(cpm(y1) > 0.1) >= 3
+table(keep1)
+y2 <- y1[keep1,,keep.lib.sizes=FALSE]
+# calculating how to normalize
+y2 <- calcNormFactors(y2)
+# estimating dispersions
+y7_transexp <- estimateDisp(y = y2, design = design_transformedexp)
+```
+
+BCV and MDS plots
+```{r}
+plotBCV(y7_transexp)
+plotMDS(y7_transexp)
+
+y7_transexp_mds <- plotMDS(y7_transexp)
+
+cbind(y7_transexp_mds$x, y7_transexp_mds$y)
+
+mdstable <- as.data.frame(cbind(y7_transexp_mds$x, y7_transexp_mds$y))
+colnames(mdstable) <- c("x", "y")
+rownames(mdstable) 
+mdstable$Population <- my_summarized_data_exp$Population
+mean(3.7689414, 3.7587307, 3.7925853)
+
+summarized_mdstable <- mdstable %>%
+        group_by(Population) %>%
+        summarise(avg_x = mean(x),
+                  avg_y = mean(y))
+
+summarized_mdstable$names <- gsub("WT", "Parent", summarized_mdstable$Population)
+mythemeMDS <-   theme(legend.title = element_text(family = "Arial", color = "black", size = 8, 
+                                                  face = "bold"),
+                      panel.background = element_rect(color ="black", linewidth = 0.5),
+                   legend.text = element_text(family = "Arial", color = "black", size = 8),
+                   axis.title.x = element_text(family = "Arial", color = "black", size = 8, 
+                                               face = "bold",
+                                               margin = margin(t = 2.5, r = 0, b = 0, l = 0)),
+                   axis.title.y = element_text(family = "Arial", color = "black", size = 8, 
+                                               face = "bold"),
+                   axis.text.x = element_text(family = "Arial", color = "black", size = 8, 
+                                              margin = margin(t = 2.5, r = 2.5, b = 0, l = 2.5)),
+                   axis.text.y = element_text(family = "Arial", color = "black", size = 8),
+                   panel.grid.minor = element_blank(), #gets rid of grey and lines in the middle
+                   panel.grid.major = element_blank()) #gets rid of grey and lines in                #panel.border = element_blank(),
+                   #axis.line = element_line(colour = 'black', size = 0.5))
+
+```
+
+```{r}
+MDSplotindiv <- 
+    ggplot(mdstable, aes(x = x, y = y, label = Population, color = Population)) +
+        mythemeMDS+
+        geom_jitter(size = 0.75, position = position_jitter(h=0.15,w=0.15)) +
+        xlab("MDS-1")+
+        ylab("MDS-2")+
+        scale_y_continuous(limits = c(-2.2, 2.5))+
+        scale_x_continuous(limits = c(-2.5, 4), breaks=seq(-2.5,4,1))+
+        scale_fill_manual(values = c("black", "#364B9AFF", "#4A7BB7FF", "#6EA6CDFF", "#98CAE1FF",
+                                     "#C2E4EFFF", "#FEDA8BFF", "#FDB366FF", "#F67E4BFF", "#DD3D2DFF",
+                                     "#A50026FF", "grey"))+
+        scale_color_manual(values = c("black", "#364B9AFF", "#4A7BB7FF", "#6EA6CDFF", "#98CAE1FF",
+                                     "#C2E4EFFF", "#FEDA8BFF", "#FDB366FF", "#F67E4BFF", "#DD3D2DFF",
+                                     "#A50026FF", "grey"))
+
+MDSplotindiv
+
+#ggsave(filename="et01b28_mds_sunset_9.30.24.pdf", plot = MDSplotindiv, device="png", units="in", height=2.3, width=3.5)
+```
+
+PCA plot generation
+```{r}
+# making "gene selection" common makes the plotMDS function output PCA instead of MDS
+y7_transexp_pca <- plotMDS(y7_transexp, gene.selection="common")
+pcatable <- as.data.frame(cbind(y7_transexp_pca$x, y7_transexp_pca$y))
+colnames(pcatable) <- c("x", "y")
+pcatable$Population <- my_summarized_data_exp$Population
+pcatable$Population <- factor(pcatable$Population, levels = c("WT", "ET1", "ET2", "ET3", "ET4", "ET5", "ET6", "ET7", "ET8", "ET9", "ET10", "ET11"))
+```
+
+
+```{r}
+PCAplotindiv <- 
+    ggplot(pcatable, aes(x = x, y = y, label = Population, color = Population)) +
+        mythemeMDS+
+        geom_jitter(size = 0.4, position = position_jitter(h=0.15,w=0.15)) +
+        xlab("PC1 (38%)")+
+        ylab("PC2 (25%)")+
+        theme(legend.position = "none")+
+        scale_y_continuous(limits = c(-2, 2))+
+        scale_x_continuous(limits = c(-4, 2.5), breaks=seq(-4,2.5,1))+
+        scale_fill_manual(values = c("black", "#364B9AFF", "#4A7BB7FF", "#6EA6CDFF", "#98CAE1FF",
+                                     "#C2E4EFFF", "#FEDA8BFF", "#FDB366FF", "#F67E4BFF", "#DD3D2DFF",
+                                     "#A50026FF", "grey"))+
+        scale_color_manual(values = c("black", "#364B9AFF", "#4A7BB7FF", "#6EA6CDFF", "#98CAE1FF",
+                                     "#C2E4EFFF", "#FEDA8BFF", "#FDB366FF", "#F67E4BFF", "#DD3D2DFF",
+                                     "#A50026FF", "grey"))
+
+PCAplotindiv
+
+#ggsave(filename="et01b28_pca_sunset_11.19.25.png", plot = PCAplotindiv, device="png", units="in", height=2, width=2)
+```
+
+GLM tests for log2-transformed IFNL1 expression with poly df = 1 New cpm
+cutoff
+```{r}
+# Genewise Negative Binomial Generalized Linear Models with Quasi-likelihood Tests
+fit_transexp7 <- glmQLFit(y7_transexp, design_transformedexp, robust = TRUE)
+plotQLDisp(fit_transexp7)
+# THROWS AN ERROR, CANT ONLY HAVE ONE COLUMN
+qlf_transexp7 <- glmQLFTest(fit_transexp7, coef = 2) 
+#Table of the Top Differentially Expressed Genes/Tags
+topTags(qlf_transexp7, sort.by = "logFC")
+# table of top differentially expressed genes with a logfc>1.5
+treat_transexp7 <- glmTreat(fit_transexp7, coef = 2, lfc = 1.5)
+topTags(treat_transexp7, sort.by = "logFC")
+
+```
+
+Filtering and making top tags table, just based on avg induced
+log2expression Final cutoffs
+```{r}
+# table with all of the top genes
+all_df_transexp7 <- topTags(treat_transexp7, p.value = 0.05, n = Inf)$table %>%
+  as_tibble()
+# table with top genes without the logFC >1.5 rule (for graphs)
+all_df_transexp_qlf <- topTags(qlf_transexp7, n = Inf)$table %>%
+  as_tibble()
+# table with all of the top genes with FDR < 0.001 and logCPM > 0.1 filters
+top_df_transexp001 <- topTags(treat_transexp7, p.value = 0.05, n = Inf) %>%
+  as.data.frame() %>%
+  as_tibble() %>%
+    filter(FDR < 0.001) %>%
+        filter(logCPM > 0.1) %>%
+        arrange(-abs(logFC))
+top_df_transexp001 # 121 genes
+
+logfc_filtered_volc_transexp001 <- top_df_transexp001 %>%
+        filter(abs(logFC) > 3) %>%
+        arrange(-abs(logFC))
+
+
+# table with top genes without the logFC >1.5 rule (for graphs)
+df_transexp_qlf15000 <- topTags(qlf_transexp7, n = 15000)$table %>%
+  as_tibble()
+
+
+# # writing the csv without low-count genes
+#readr::write_csv(top_df_transexp001, "/Users/ethayer/Google Drive/Grad School/Brooke Lab/Data/bulkRNAseq_clones/R_Outputs/02a_topdiff_geneexprifnl_log2expression_5.23.22.csv")
+```
+
+
+
+
+
+
+Making volcano plots for old cutoffs
+
+```{r eval=FALSE, include=FALSE}
+
+```
+
+```{r fig.height=3, fig.width=5}
+filter_volc_transexp001 <- all_df_transexp_qlf %>%
+        filter(-log10(FDR) > 3) %>%
+        slice_max(., order_by = abs(logFC), n = 5, with_ties = TRUE) %>%
+        arrange(-abs(logFC)) 
+genesofInterest <- c("MAP3K1", "JUN")
+
+filter_volc_transexp001_jun <- all_df_transexp_qlf %>%
+        filter(genes %in% genesofInterest)
+# use this for plotting because it doesn't take out the filtered ones yet
+# based on logFC
+all_df_transexp_qlf
+
+tab_logfc1 <- df_transexp_qlf15000%>%
+        filter(., genes %in% genesofInterest)
+mythemeMDS <-   theme(legend.title = element_text(family = "Arial", color = "black", size = 8, 
+                                                  face = "bold"),
+                      panel.background = element_rect(color ="black", linewidth = 0.5),
+                   legend.text = element_text(family = "Arial", color = "black", size = 8),
+                   axis.title.x = element_text(family = "Arial", color = "black", size = 8, 
+                                               face = "bold",
+                                               margin = margin(t = 0, r = 0, b = 0, l = 0)),
+                   axis.title.y = element_text(family = "Arial", color = "black", size = 8, 
+                                               face = "bold"),
+                   axis.text.x = element_text(family = "Arial", color = "black", size = 8, 
+                                              margin = margin(t = 2.5, r = 5, b = 5, l = 5)),
+                   axis.text.y = element_text(family = "Arial", color = "black", size = 8),
+                   panel.grid.minor = element_blank(), #gets rid of grey and lines in the middle
+                   panel.grid.major = element_blank())
+volc_exp_plot001 <-
+        all_df_transexp_qlf %>%
+        ggplot(aes(x = logFC, y = -log10(FDR)), color = genes)+
+        geom_point(color = "grey", size = 0.75) +
+        geom_point(data = all_df_transexp_qlf %>% filter(-log10(FDR) > 3, 
+                                                         abs(logFC) > 1.5, 
+                                                         logCPM > 0.1),
+                   color = "black", size = 0.75) +
+        geom_point(data = tab_logfc1, color = "red", size = 0.75)+
+        geom_hline(yintercept = -log10(0.001), color = "black", linewidth = 0.5) +
+        geom_vline(xintercept = c(-1.5, 1.5), color = "black", linewidth = 0.5) +
+        scale_x_continuous(limits=c(-32,32), breaks = c(-30,-20,-10,0,10,20,30)) +
+        scale_y_continuous(limits=c(0,13), breaks = c(0,2,4,6,8,10,12)) +
+        # ggrepel::geom_label_repel(data = tab_logfc1,
+        #                           mapping = aes(label = genes), label.size = 0.05)+
+        labs(title = "Induced IFNL1 Model") +
+        mythemeMDS
+volc_exp_plot001
+
+
+#ggsave(filename="inflexp_volcano001_10.9.24.png", plot = volc_exp_plot001, device="png", 
+       units="in", height=2, width=3, scale = 1.5) 
+
+log2(20)
+2^4.3
+```
+
+```{r}
+library(plotly)
+library(circlize)
+library(gridExtra)
+library(manhattanly)
+volcano_plot_28 <- volcanoly(all_df_transexp_qlf, p= "FDR", effect_size = "logFC", snp = "genes",
+          effect_size_line = c(-1.5, 1.5),
+          effect_size_line_width = 0.5,
+          effect_size_line_type = "solid",
+          genomewideline = -log10(0.001),
+          genomewideline_width = 0.5,
+          genomewideline_type = "solid",
+          highlight = NULL,
+          highlight_color = "red",
+          xlab = "logFC",
+          ylab = "-log10(FDR)")
+
+volcano_plot_28
+# to save plot to a HTML file:
+htmlwidgets::saveWidget(as_widget(volcano_plot_28), "topgeneset01b28.html")
+```
+
+MA plot
+
+```{r}
+
+MA_exp_plot001 <-
+        all_df_transexp7 %>%
+        ggplot(aes(x = logCPM, y = logFC), color = genes)+
+        geom_point(alpha = 0.3) +
+        geom_point(data = all_df_transexp7 %>% filter(logCPM > log2(0.1), abs(logFC) > 3),
+                   color = "red", alpha = 0.5) +
+        geom_hline(yintercept = c(-3, 3), color = "red") +
+        geom_vline(xintercept = log2(0.1), color = "red") +
+        # ggrepel::geom_label_repel(data = filter_volc_transexp001,
+        #                           mapping = aes(label = genes), force = 2)+
+        labs(title = "Induced IFNL1 Model")+
+        mythemeMDS
+MA_exp_plot001
+
+ggsave(filename="inflexp_MAplot_1.18.24.png", plot = MA_exp_plot001, device="png", 
+       units="in", height=2.5, width=5, scale = 1.5) 
+```
+
+```{r fig.height=10}
+tags <- topTags(treat_transexp7, n = 40, p.value = 0.001 )%>%
+  as.data.frame() %>%
+  as_tibble() %>%
+        arrange(-abs(logFC))
+signif_genes <- dplyr::filter(tags, FDR < 0.001)$genes
+y7_cpms <- cpm(y7_transexp, log = TRUE)
+rownames(y7_cpms) <- y7_transexp$genes$genes
+
+y7_cpms <- y7_cpms[signif_genes, ]
+
+colors <- viridis::viridis(n = 6, begin = 0, end = 1)
+
+hm <- ComplexHeatmap::Heatmap(
+    t(scale(t(y7_cpms))),
+    show_row_names = TRUE,
+    show_row_dend = FALSE,
+    col = colors
+    )
+
+
+ComplexHeatmap::draw(hm)
+all_df_transexp_qlf
+```
+
+Getting trajectory analysis results, so analysis from Spearman correlation
+```{r eval=FALSE, include=FALSE}
+logCPM.obs7 <- cpm(y7_transexp, prior.count = qlf_transexp7$prior.count, log = TRUE)
+rownames(logCPM.obs7) <- y7_transexp$genes$genes
+head(logCPM.obs7)
+colnames(logCPM.obs7) <- y7_transexp$samples$group
+head(logCPM.obs7)
+
+logCPM.fit7 <- cpm(qlf_transexp7, log = TRUE)
+rownames(logCPM.fit7) <- qlf_transexp7$genes$genes
+colnames(logCPM.fit7) <- y7_transexp$samples$group
+head(logCPM.fit7)
+
+top121_logfcFDR_transexp001 <- top_df_transexp001 %>%
+        slice_max(., order_by = abs(logFC),n = 121, with_ties = TRUE) %>%
+        arrange(-abs(logFC))
+
+spearmantable <- data.frame(Gene = character(),
+  Spearmanrho = integer() )
+
+#specify path to save PDF to
+destination2 = '/Users/ethayer/Google Drive/Grad School/Brooke Lab/Data/bulkRNAseq_clones/top121_transexp001.pdf'
+
+#open PDF
+pdf(file=destination2)
+
+#save plots to PDF
+par(mfrow=c(1,1))
+for(i in 1:121) {
+  Symbol6 <- top121_logfcFDR_transexp001$genes[i]
+  logCPM.obs.i7 <- logCPM.obs7[Symbol6,]
+  logCPM.fit.i7 <- logCPM.fit7[Symbol6,]
+  logCPM.obs.trial <- as.data.frame(logCPM.obs7[Symbol6,])
+  logCPM.fit.trial <- as.data.frame(logCPM.fit7[Symbol6,])
+  transformedtable <- as.data.frame(transformed)
+  logCPMbothtable <- bind_cols(logCPM.obs.trial,logCPM.fit.trial, transformedtable)
+  logCPMRegression <- lm(logCPM.obs7[Symbol6, ] ~ transformed, data = logCPMbothtable)
+  rsquared <- summary(logCPMRegression)
+  regcoef <- coef(logCPMRegression)[2]
+  spearman <- cor.test(logCPMbothtable$transformed, logCPMbothtable$`logCPM.obs7[Symbol6, ]`, method = "spearman")$estimate
+  spearmantable <- rbind(spearmantable, data.frame(Gene = Symbol6, Spearmanrho = spearman))
+  
+}
+par(mfrow=c(1,1))
+#turn off PDF plotting
+dev.off() 
+
+transformedtable <- as.data.frame(transformed)
+logCPMbothtable <- bind_cols(logCPM.obs.trial,logCPM.fit.trial, transformedtable)
+logCPMRegression <- lm(logCPM.obs7["JUN", ] ~ transformed, data = logCPMbothtable)
+rsquared <- summary(logCPMRegression)
+regcoef <- coef(logCPMRegression)[2]
+  
+  
+spearmantable %>% arrange(-abs(Spearmanrho))
+  
+plot(transformed, logCPM.obs.i6, ylab="log-CPM", main=Symbol6, pch=16)
+  lines(transformed, logCPM.fit.i6, col="red", lwd=2)
+```
+
+Getting results from Spearman correlation analysis but with way more genes in the loop
+```{r eval=FALSE, include=FALSE}
+logCPM.obs7all <- cpm(y7_transexp, prior.count = qlf_transexp7$prior.count, log = TRUE)
+rownames(logCPM.obs7all) <- y7_transexp$genes$genes
+head(logCPM.obs7all)
+colnames(logCPM.obs7all) <- y7_transexp$samples$group
+head(logCPM.obs7all)
+
+logCPM.fit7all <- cpm(qlf_transexp7, log = TRUE)
+rownames(logCPM.fit7all) <- qlf_transexp7$genes$genes
+colnames(logCPM.fit7all) <- y7_transexp$samples$group
+head(logCPM.fit7all)
+
+
+spearmantable_all <- data.frame(genes = character(),
+  Spearmanrho = integer() )
+
+
+for(i in 1:15000) {
+  Symbol6 <- df_transexp_qlf15000$genes[i]
+  logCPM.obs.i7all <- logCPM.obs7all[Symbol6,]
+  logCPM.fit.i7all <- logCPM.fit7all[Symbol6,]
+  logCPM.obs.trial <- as.data.frame(logCPM.obs7all[Symbol6,])
+  logCPM.fit.trial <- as.data.frame(logCPM.fit7all[Symbol6,])
+  transformedtable <- as.data.frame(transformed)
+  logCPMbothtable <- bind_cols(logCPM.obs.trial,logCPM.fit.trial, transformedtable)
+  logCPMRegression <- lm(logCPM.obs7all[Symbol6, ] ~ transformed, data = logCPMbothtable)
+  rsquared <- summary(logCPMRegression)
+  regcoef <- coef(logCPMRegression)[2]
+  spearman <- cor.test(logCPMbothtable$transformed, 
+                       logCPMbothtable$`logCPM.obs7all[Symbol6, ]`,
+                       method = "spearman")$estimate
+  spearmantable_all <- rbind(spearmantable_all, data.frame(
+                                                           Spearmanrho = spearman))
+
+}
+
+spearmantable_all %>% arrange(-abs(Spearmanrho))
+
+top15000genes <- cbind(df_transexp_qlf15000, spearmantable_all)
+```
+
+```{r}
+library(plotly)
+library(circlize)
+library(gridExtra)
+library(manhattanly)
+volcano_plot_500 <- volcanoly(top500genes, p= "FDR", effect_size = "Spearmanrho", snp = "genes",
+          # effect_size_line = c(-1.5, 1.5),
+          # effect_size_line_width = 0.5,
+          # effect_size_line_type = "solid",
+          # genomewideline = -log10(0.001),
+          # genomewideline_width = 0.5,
+          # genomewideline_type = "solid",
+          highlight = NULL,
+          highlight_color = "red",
+          xlab = "Rho",
+          ylab = "-log10(FDR)")
+
+volcano_plot_500
+# to save plot to a HTML file:
+htmlwidgets::saveWidget(as_widget(volcano_plot_500), "top500rhogeneset01b28.html")
+```
+
+```{r}
+NEWSORTED <- top15000genes%>%
+        filter(., -log10(FDR) > 3,
+               abs(logFC) > 3, 
+               logCPM > 0.1,
+               abs(Spearmanrho) > 0.5)%>%
+        arrange(-abs(Spearmanrho))
+
+write.csv(NEWSORTED, file = "lowerfiltered_et01b28_8.28.25.csv")
+```
+
+
+```{r fig.height=2, fig.width=3.5}
+tab_logfc1 <- top15000genes%>%
+        filter(., -log10(FDR) > 3,
+               abs(logFC) > 2, 
+               logCPM > 0.1,
+               abs(Spearmanrho) > 0.5)%>%
+        arrange(-abs(Spearmanrho))%>%
+        .[1:20,]
+
+volc_exp_plot001 <-
+        top15000genes %>%
+        ggplot(aes(x = Spearmanrho, y = logFC), color = genes)+
+        geom_point(color = "grey", size = 0.75, alpha = 0.5) +
+        geom_point(data = top15000genes %>% filter(-log10(FDR) > 3, 
+                                                         abs(logFC) > 3, 
+                                                         logCPM > 0.1,
+                                                         abs(Spearmanrho) > 0.5
+                                                   ),
+                   color = "black", size = 0.75, alpha = 0.5) +
+        #geom_point(data = tab_logfc1, color = "red", size = 0.75)+
+        geom_hline(yintercept = c(-3, 3), color = "black", linewidth = 0.25) +
+        geom_vline(xintercept = c(-0.5,0.5), color = "black", linewidth = 0.25) +
+        scale_x_continuous(limits=c(-1,1), 
+                           breaks = c(-1,-0.75,-0.5,-0.25,0,0.25,0.5,0.75,1)) +
+        scale_y_continuous(limits=c(-32,32), breaks = c(-30,-20,-10,0,10,20,30)) +
+        mythemeMDS
+
+volc_exp_plot001
+#ggsave(filename="logfc_spearman_volc_9.9.25.png", plot = volc_exp_plot001, device="png", 
+#       units="in", height=2, width=3.4) 
+```
+
+
+log2 transformed expression values with poly() df = 1 linear model
+log-cpm plot
+```{r}
+logCPM.obs1 <- cpm(y7_transexp, prior.count = qlf_transexp7$prior.count, log = TRUE)
+rownames(logCPM.obs1) <- y7_transexp$genes$genes
+head(logCPM.obs1)
+logCPM.fit1 <- cpm(qlf_transexp7, log = TRUE)
+rownames(logCPM.fit1) <- qlf_transexp7$genes$genes
+colnames(logCPM.fit1) <- y7_transexp$samples$group
+head(logCPM.fit1)
+genesofInterest <- c("IFIT1", "IFIT2", "IFIT3", "ISG15", "APOL6", "SAMHD1", "JUN", "CD38", "LYPD1", "KLF6", 
+                     "IFI35", "TRIM22", "PSMB10", "JADE2", "MLLT3", "LMO7",
+                     "EXT2", "GLS", "SGK1", "TBX3", "FOSB", "SCG5", "MMP10")
+
+tab_logfc1 <- as.data.frame(topTags(qlf_transexp7, n = Inf))%>%
+        filter(., genes %in% genesofInterest)
+
+tab_logfc1 %>%
+        filter(., genes %in% genesofInterest)
+
+#specify path to save PDF to
+destination_new = '/Users/ethayer/Google Drive/Grad School/Brooke Lab/Data/bulkRNAseq_clones/interestingtrajectories_8.28.25.pdf'
+
+#open PDF
+pdf(file=destination_new, width = 7, height = 4)
+
+par(mfrow=c(2,2))
+for(i in 1:19) {
+  Symbol <- tab_logfc1$genes[i]
+  logCPM.obs.i1 <- logCPM.obs1[Symbol,]
+  logCPM.fit.i1 <- logCPM.fit1[Symbol,]
+  logCPM.obs.trial <- as.data.frame(logCPM.obs1[Symbol,])
+  logCPM.fit.trial <- as.data.frame(logCPM.fit1[Symbol,])
+  transformedtable <- as.data.frame(transformed)
+  logCPMbothtable <- bind_cols(logCPM.obs.trial,logCPM.fit.trial, transformedtable)
+  logCPMRegression <- lm(logCPM.obs1[Symbol, ] ~ transformed, data = logCPMbothtable)
+  rsquared <- summary(logCPMRegression)
+  regcoef <- coef(logCPMRegression)[2]
+  print(ggplot(logCPMbothtable, aes(x=transformed, y=logCPM.obs1[Symbol, ])) + 
+        geom_point(shape=21, size=3,color="black",fill="#414487FF") +
+        scale_x_continuous(limits=c(8,18.5), breaks = c(8,10,12,14,16,18)) +
+        mdthemes::md_theme_classic()+
+        labs(title = Symbol, subtitle = regcoef, caption = rsquared$fstatistic)+
+        ylab("**logCPM**")+
+        xlab("**log(Relative *IFNL1* Expression)**")+
+        geom_smooth(method=lm, color="black")+
+        theme(text = element_text(size =18)))
+  
+  
+}
+par(mfrow=c(1,1))
+#turn off PDF plotting
+dev.off()
+```
+
+This is to get the x and y datapoints for individual genes to plot in Prism
+```{r fig.height=2, fig.width=3}
+mythemeMDS1 <-   theme(legend.title = element_text(family = "Arial", color = "black", size = 8, 
+                                                  face = "bold"),
+                      panel.background = element_rect(color ="black", linewidth = 0.5),
+                   legend.text = element_text(family = "Arial", color = "black", size = 8),
+                   axis.title.x = element_text(family = "Arial", color = "black", size = 8, 
+                                               face = "bold",
+                                               margin = margin(t = 0, r = 0, b = 0, l = 0)),
+                   axis.title.y = element_text(family = "Arial", color = "black", size = 8, 
+                                               face = "bold"),
+                   axis.text.x = element_text(family = "Arial", color = "black", size = 8, 
+                                              margin = margin(t = 5, r = 5, b = 0, l = 5)),
+                   axis.text.y = element_text(family = "Arial", color = "black", size = 8),
+                   panel.grid.minor = element_blank(), #gets rid of grey and lines in the middle
+                   panel.grid.major = element_blank())
+
+rsquared$adj.r.squared
+logCPM.obs.trial <- as.data.frame(logCPM.obs1["MAVS",])
+logCPM.fit.trial <- as.data.frame(logCPM.fit1["MAVS",])
+transformedtable <- as.data.frame(transformed)
+logCPMbothtable <- bind_cols(logCPM.obs.trial,logCPM.fit.trial, transformedtable)
+
+map3k1trajectory <- ggplot(logCPMbothtable, aes(x=transformed, y=logCPM.obs1["CTNNB1",])) + 
+        geom_smooth(method=lm, color="black", )+
+        geom_point(shape=21, size=1,color="black",fill="#414487FF") +
+        scale_x_continuous(limits=c(8,18.5), breaks = c(8,10,12,14,16,18)) +
+        labs(title = "MAP3K1")+
+        ylab("logCPM")+
+        xlab("log(Relative IFNL1 Expression)")+
+        mythemeMDS1
+
+map3k1trajectory               
+
+# you can replace the gene name with any other gene and then get the datapoints to plot in Prism
+logCPM.obs.trial2 <- as.data.frame(logCPM.obs1["JUN",])
+logCPM.fit.trial2 <- as.data.frame(logCPM.fit1["JUN",])
+transformedtable <- as.data.frame(transformed)
+logCPMbothtable2 <- bind_cols(logCPM.obs.trial2,logCPM.fit.trial2, transformedtable)
+logCPMbothtable2
+juntrajectory <- ggplot(logCPMbothtable2, aes(x=transformed, y=logCPM.obs1["JUN",])) + 
+        geom_smooth(method=lm, color="black")+
+        geom_point(shape=21, size=3,color="black",fill="#1F5AFF") +
+        scale_x_continuous(limits=c(8,18.5), breaks = c(8,10,12,14,16,18)) +
+        labs(title = "JUN")+
+        ylab("logCPM")+
+        xlab("log(Relative IFNL1 Expression)")+
+        mythemeMDS
+juntrajectory                
+ggsave(filename="juntrajectory_4.1.24.png", plot = juntrajectory, device="png", units="in", height=4, width=5)
+
+```
+
+```{r}
+sessionInfo()
+```
+
+R version 4.2.2 (2022-10-31)
+Platform: aarch64-apple-darwin20 (64-bit)
+Running under: macOS Ventura 13.0
+
+Matrix products: default
+LAPACK: /Library/Frameworks/R.framework/Versions/4.2-arm64/Resources/lib/libRlapack.dylib
+
+locale:
+[1] en_US.UTF-8/en_US.UTF-8/en_US.UTF-8/C/en_US.UTF-8/en_US.UTF-8
+
+attached base packages:
+[1] grid      stats4    stats     graphics  grDevices utils     datasets  methods   base     
+
+other attached packages:
+ [1] InTAD_1.18.0                             MultiAssayExperiment_1.24.0             
+ [3] SummarizedExperiment_1.28.0              MatrixGenerics_1.10.0                   
+ [5] matrixStats_1.4.1                        TxDb.Hsapiens.UCSC.hg38.knownGene_3.16.0
+ [7] GenomicFeatures_1.50.4                   GenomicRanges_1.50.2                    
+ [9] GenomeInfoDb_1.34.9                      lubridate_1.9.3                         
+[11] forcats_1.0.0                            stringr_1.5.1                           
+[13] purrr_1.0.2                              readr_2.1.5                             
+[15] tibble_3.2.1                             tidyverse_2.0.0                         
+[17] paletteer_1.6.0                          circlize_0.4.16                         
+[19] ComplexHeatmap_2.14.0                    gtools_3.9.5                            
+[21] tidyr_1.3.1                              dplyr_1.1.4                             
+[23] edgeR_3.40.2                             limma_3.54.2                            
+[25] org.Hs.eg.db_3.16.0                      AnnotationDbi_1.60.2                    
+[27] IRanges_2.32.0                           S4Vectors_0.36.2                        
+[29] Biobase_2.58.0                           BiocGenerics_0.44.0                     
+[31] ggplot2_3.5.1                           
+
+loaded via a namespace (and not attached):
+  [1] backports_1.5.0          BiocFileCache_2.6.1      systemfonts_1.1.0        plyr_1.8.9              
+  [5] splines_4.2.2            BiocParallel_1.32.6      digest_0.6.37            foreach_1.5.2           
+  [9] htmltools_0.5.8.1        viridis_0.6.5            magick_2.8.5             fansi_1.0.6             
+ [13] magrittr_2.0.3           memoise_2.0.1            cluster_2.1.6            doParallel_1.0.17       
+ [17] tzdb_0.4.0               Biostrings_2.66.0        vroom_1.6.5              timechange_0.3.0        
+ [21] prettyunits_1.2.0        colorspace_2.1-1         blob_1.2.4               rappdirs_0.3.3          
+ [25] textshaping_0.4.0        xfun_0.47                crayon_1.5.3             RCurl_1.98-1.16         
+ [29] prismatic_1.1.2          iterators_1.0.14         glue_1.7.0               pals_1.9                
+ [33] gtable_0.3.5             zlibbioc_1.44.0          XVector_0.38.0           GetoptLong_1.0.5        
+ [37] DelayedArray_0.24.0      car_3.1-2                shape_1.4.6.1            maps_3.4.2              
+ [41] abind_1.4-8              scales_1.3.0             DBI_1.2.3                rstatix_0.7.2           
+ [45] Rcpp_1.0.13              viridisLite_0.4.2        progress_1.2.3           clue_0.3-65             
+ [49] bit_4.5.0                mapproj_1.2.11           mclust_6.1.1             httr_1.4.7              
+ [53] RColorBrewer_1.1-3       pkgconfig_2.0.3          XML_3.99-0.17            farver_2.1.2            
+ [57] dbplyr_2.5.0             locfit_1.5-9.10          utf8_1.2.4               reshape2_1.4.4          
+ [61] tidyselect_1.2.1         labeling_0.4.3           rlang_1.1.4              munsell_0.5.1           
+ [65] tools_4.2.2              cachem_1.1.0             cli_3.6.3                generics_0.1.3          
+ [69] RSQLite_2.3.7            broom_1.0.6              evaluate_1.0.0           fastmap_1.2.0           
+ [73] yaml_2.3.10              ragg_1.3.3               rematch2_2.1.2           knitr_1.48              
+ [77] bit64_4.5.2              KEGGREST_1.38.0          xml2_1.3.6               biomaRt_2.54.1          
+ [81] compiler_4.2.2           rstudioapi_0.16.0        filelock_1.0.3           curl_5.2.3              
+ [85] png_0.1-8                ggsignif_0.6.4           statmod_1.5.0            stringi_1.8.4           
+ [89] lattice_0.22-6           Matrix_1.6-5             vctrs_0.6.5              pillar_1.9.0            
+ [93] lifecycle_1.0.4          GlobalOptions_0.1.2      bitops_1.0-8             rtracklayer_1.58.0      
+ [97] qvalue_2.30.0            R6_2.5.1                 BiocIO_1.8.0             gridExtra_2.3           
+[101] codetools_0.2-20         dichromat_2.0-0.1        rjson_0.2.23             withr_3.0.1             
+[105] GenomicAlignments_1.34.1 Rsamtools_2.14.0         GenomeInfoDbData_1.2.9   parallel_4.2.2          
+[109] hms_1.1.3                rmarkdown_2.28           carData_3.0-5            ggpubr_0.6.0            
+[113] restfulr_0.0.15         
