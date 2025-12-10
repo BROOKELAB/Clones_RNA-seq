@@ -20,11 +20,11 @@ Raw reads were demultiplexed using bclfastq v2.20 Conversion Software (Illumina)
 ## Analysis in R
 ### Script: et01b28_12.8.25.Rmd
 This script performs:\
-:white_check_mark: Loads the phenotype data and summarizes the results for each A549 population
-:white_check_mark: Loads the count matrix and creates an edgeR object for DE analysis
-:white_check_mark: Uses the phenotype data to create a design matrix that uses the increasing _IFNL1_ expression as a trajectory
-:white_check_mark: Creates a PCA plot to look at the transcriptional similarities among the populations
-:white_check_mark: Performs a Spearman correlation analysis of the gene expression and _IFNL1_ phenotypes
+:white_check_mark: Loads the phenotype data and summarizes the results for each A549 population\
+:white_check_mark: Loads the count matrix and creates an edgeR object for DE analysis\
+:white_check_mark: Uses the phenotype data to create a design matrix that uses the increasing _IFNL1_ expression as a trajectory\
+:white_check_mark: Creates a PCA plot to look at the transcriptional similarities among the populations\
+:white_check_mark: Performs a Spearman correlation analysis of the gene expression and _IFNL1_ phenotypes\
 
 ### Requirements
 **R (v2.2.2)**
