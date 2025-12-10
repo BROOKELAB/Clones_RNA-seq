@@ -8,7 +8,7 @@ This repository contains the scripts used to process the bulk RNA-seq data colle
 ## Preliminary processing
 Raw reads were demultiplexed using bclfastq v2.20 Conversion Software (Illumina). The reads were then processed further using the following:
 1. Alignment using STAR (v2.7.6a)
-   - Input: read1 and read2
+   - Input: .fastq files for read1 and read2
    - Output: files for alignment, splice junctions, and per-gene counts (Log.final.out, SJ.out.tab, ReadsPerGene.out.tab)
    - Script: star_align.bash
 
@@ -19,3 +19,20 @@ Raw reads were demultiplexed using bclfastq v2.20 Conversion Software (Illumina)
 
 ## Analysis in R
 ### Script: et01b28_12.8.25.Rmd
+This script performs:\
+:white_check_mark: Loads the phenotype data and summarizes the results for each A549 population
+:white_check_mark: Loads the count matrix and creates an edgeR object for DE analysis
+:white_check_mark: Uses the phenotype data to create a design matrix that uses the increasing _IFNL1_ expression as a trajectory
+:white_check_mark: Creates a PCA plot to look at the transcriptional similarities among the populations
+:white_check_mark: Performs a Spearman correlation analysis of the gene expression and _IFNL1_ phenotypes
+
+### Requirements
+**R (v2.2.2)**
+- org.Hs.eg.db (v3.16.0)
+- edgeR (3.40.2)
+- dplyr (v1.21.4)
+- tidyr (v1.3.1)
+- ggplot2 (v3.5.1)
+- gtools (v3.9.5)
+- forcats (v1.0.0)
+- tibble (v3.2.1)
